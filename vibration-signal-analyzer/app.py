@@ -10,9 +10,14 @@ import pandas as pd
 import streamlit as st
 from scipy.io import loadmat
 
+from feature_extraction import (
+    FEATURE_NAMES,
+    reconstruction_feature_difference,
+)
 from data_processing import (
     process,
     amplitude_spectrum,
+    build_feature_table,
 )
 from aux_functions import (
     extract_mat_sensor_names,
