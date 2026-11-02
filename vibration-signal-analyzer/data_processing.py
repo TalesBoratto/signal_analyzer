@@ -32,12 +32,12 @@ def features(signal: Signal) -> dict:
     x = signal.data
 
     return {
-        "Média / DC": float(np.mean(x)),
-        "RMS": float(np.sqrt(np.mean(x**2))),
-        "Máximo": float(np.max(x)),
-        "Mínimo": float(np.min(x)),
-        "Pico absoluto": float(np.max(np.abs(x))),
-        "Pico a pico": float(np.ptp(x)),
+        "Mean Value / DC": np.round(float(np.mean(x)),6),
+        "RMS": np.round(float(np.sqrt(np.mean(x**2))),6),
+        "Max Value": np.round(float(np.max(x)),6),
+        "Min Value": np.round(float(np.min(x)),6),
+        "Abs Peak": np.round(float(np.max(np.abs(x))),6),
+        "Peak-to-Peak": np.round(float(np.ptp(x)),6),
     }
 
 
@@ -71,10 +71,10 @@ def process(data, fs, cutoff, order, name, unit:str=""):
 
     signals = {
         "Original": original,
-        "Após DC": acc_dc,
-        "Após DC + HPF": acc_filtered,
-        "Reconstruída FFT": acc_fft,
-        "Reconstruída diferenças finitas": acc_time,
+        "After DC": acc_dc,
+        "After DC + HPF": acc_filtered,
+        "Rebuild via FFT": acc_fft,
+        "Rebuild via time derivation": acc_time,
     }
 
     points = pd.DataFrame({
@@ -112,12 +112,12 @@ def process(data, fs, cutoff, order, name, unit:str=""):
 
     velocity_metrics = pd.DataFrame(
         [features(velocity)],
-        index=["Velocidade estimada"],
+        index=["Estimated Velocity"],
     )
 
     reconstruction_metrics = pd.DataFrame({
-        "Derivação FFT": error_metrics(acc_dc, acc_fft),
-        "Diferenças finitas": error_metrics(acc_dc, acc_time),
+        "FFT Derivation": error_metrics(acc_dc, acc_fft),
+        "Time Derivation": error_metrics(acc_dc, acc_time),
     }).T
 
     return {
