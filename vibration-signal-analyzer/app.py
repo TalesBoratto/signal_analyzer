@@ -94,7 +94,7 @@ else:
 
     data_keys = [
         key
-        for key in ("data", "Data")
+        for key in ("data", "Data","X")
         if key in mat
     ]
 
