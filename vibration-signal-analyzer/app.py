@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 import zipfile
 
@@ -8,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 import streamlit as st
+import plotly.graph_objects as go
 from scipy.io import loadmat
 
 from feature_extraction import (
@@ -17,7 +19,7 @@ from feature_extraction import (
 from data_processing import (
     process,
     amplitude_spectrum,
-    build_feature_table,
+    build_feature_table_from_result,
 )
 from aux_functions import (
     extract_mat_sensor_names,
@@ -49,7 +51,7 @@ st.sidebar.header("Input")
 
 demo = st.sidebar.checkbox(
     "Use synthetic signal -- demonstration only",
-    value=True,
+    value=False,
     disabled=True,
 )
 
@@ -290,261 +292,385 @@ c3.metric("Sampling rate", f"{fs:g} Hz")
 c4.metric("Nominal duration", f"{original.size / fs:.3f} s")
 
 
-# =============================================================================
-# ACELERAÇÃO E FFT ANTES DO HPF
-# =============================================================================
+analysis_tab, features_tab = st.tabs(["Signal analysis", "Feature extraction"])
 
-st.subheader("Acceleration and spectrum before high-pass filtering")
+with analysis_tab:
+    # =============================================================================
+    # ACELERAÇÃO E FFT ANTES DO HPF
+    # =============================================================================
 
-left, right = st.columns(2)
+    st.subheader("Acceleration and spectrum before high-pass filtering")
 
-with left:
-    fig = line_figure(
-        x=acc_dc.time,
-        y=acc_dc.data,
-        title="Acceleration after DC removal — no HPF",
-        x_label="Time [s]",
-        y_label=f"Acceleration [{unit}]",
-        color="black",
+    left, right = st.columns(2)
+
+    with left:
+        fig = line_figure(
+            x=acc_dc.time,
+            y=acc_dc.data,
+            title="Acceleration after DC removal — no HPF",
+            x_label="Time [s]",
+            y_label=f"Acceleration [{unit}]",
+            color="black",
+        )
+
+        st.plotly_chart(
+            fig,
+            use_container_width=True,
+            config=PLOT_CONFIG,
+            key="acceleration",
+        )
+
+    with right:
+        frequency, amplitude = amplitude_spectrum(result["input_spectrum"])
+
+        fig = line_figure(
+            x=frequency,
+            y=amplitude,
+            title="Single-sided amplitude spectrum — no HPF",
+            x_label="Frequency [Hz]",
+            y_label=f"Amplitude [{unit}]",
+            color="black",
+        )
+
+        fig.add_vline(
+            x=cutoff,
+            line_color="crimson",
+            line_dash="dash",
+            annotation_text=f"Cutoff: {cutoff:g} Hz",
+            annotation_position="top right",
+        )
+
+        st.plotly_chart(
+            fig,
+            use_container_width=True,
+            config=PLOT_CONFIG,
+            key="spectrum",
+        )
+
+    st.caption(
+        "Both plots use acceleration after DC removal and before HPF. "
+        "The red line indicates the selected cutoff. "
+        "The displayed FFT is not high-pass filtered and uses no window."
+    )
+
+    # =============================================================================
+    # VELOCIDADE: WAVEFORM E FFT
+    # =============================================================================
+
+    st.subheader("Estimated velocity")
+
+    left, right = st.columns(2)
+
+    with left:
+        fig = line_figure(
+            x=velocity.time,
+            y=velocity.data,
+            title="Velocity estimated by FFT integration",
+            x_label="Time [s]",
+            y_label=f"Velocity [{velocity.unity}]",
+            color="seagreen",
+        )
+
+        st.plotly_chart(
+            fig,
+            use_container_width=True,
+            config=PLOT_CONFIG,
+            key="velocity_waveform",
+        )
+
+    with right:
+        frequency_vel, amplitude_vel = amplitude_spectrum(result["velocity_spectrum"])
+
+        fig = line_figure(
+            x=frequency_vel,
+            y=amplitude_vel,
+            title="Velocity — single-sided amplitude spectrum",
+            x_label="Frequency [Hz]",
+            y_label=f"Amplitude [{velocity.unity}]",
+            color="seagreen",
+        )
+
+        fig.add_vline(
+            x=cutoff,
+            line_color="crimson",
+            line_dash="dash",
+            annotation_text=f"Cutoff: {cutoff:g} Hz",
+            annotation_position="top right",
+        )
+
+        st.plotly_chart(
+            fig,
+            use_container_width=True,
+            config=PLOT_CONFIG,
+            key="velocity_spectrum",
+        )
+
+    st.caption(
+        "The velocity spectrum is calculated from the estimated velocity, "
+        "after acceleration high-pass filtering and FFT integration. "
+        "No additional filter or window is applied to display this spectrum."
+    )
+
+    # =============================================================================
+    # COMPARAÇÃO DAS WAVEFORMS DE ACELERAÇÃO
+    # =============================================================================
+
+    st.subheader("Reference and reconstructed acceleration")
+
+    fig = reconstruction_figure(
+        points=points,
+        unit=unit,
     )
 
     st.plotly_chart(
         fig,
         use_container_width=True,
         config=PLOT_CONFIG,
-        key="acceleration",
+        key="acceleration_reconstruction_comparison",
     )
 
-with right:
-    frequency, amplitude = amplitude_spectrum(acc_dc)
-
-    fig = line_figure(
-        x=frequency,
-        y=amplitude,
-        title="Single-sided amplitude spectrum — no HPF",
-        x_label="Frequency [Hz]",
-        y_label=f"Amplitude [{unit}]",
-        color="black",
+    st.caption(
+        "The reference is acceleration after DC removal, before HPF. "
+        "The reconstructed signals are obtained by differentiating "
+        "the estimated velocity using FFT and finite differences."
     )
 
-    fig.add_vline(
-        x=cutoff,
-        line_color="crimson",
-        line_dash="dash",
-        annotation_text=f"Cutoff: {cutoff:g} Hz",
-        annotation_position="top right",
+    st.caption(
+        "Click a legend item to hide or show a curve. "
+        "Double-click a legend item to isolate it. "
+        "All three curves share the same acceleration axis."
+    )
+
+    # =============================================================================
+    # ACELERAÇÃO E ERROS DE RECONSTRUÇÃO
+    # =============================================================================
+
+    st.subheader("Acceleration and reconstruction errors")
+
+    error_options = {
+        "Signed error — same acceleration axis": "signed",
+        "Absolute error — same acceleration axis": "absolute",
+        "Relative error — secondary axis": "relative",
+    }
+
+    selected_error = st.selectbox(
+        "Error measure shown in the chart",
+        options=list(error_options),
+        index=0,
+        key="error_measure_selection_v2",
+    )
+
+    error_type = error_options[selected_error]
+
+    if error_type == "absolute":
+        st.latex(
+            r"e_{\mathrm{abs}}[n] = "
+            r"\left|a_{\mathrm{DC}}[n]-\hat{a}[n]\right|"
+        )
+
+        st.caption(
+            "Absolute errors are nonnegative and share the acceleration "
+            "axis and physical unit."
+        )
+
+    elif error_type == "signed":
+        st.latex(
+            r"e[n] = a_{\mathrm{DC}}[n]-\hat{a}[n]"
+        )
+
+        st.caption(
+            "Signed errors share the acceleration axis and physical unit. "
+            "The sign follows reference minus estimate."
+        )
+
+    else:
+        st.latex(
+            r"e_{\mathrm{rel}}[n] = "
+            r"\frac{a_{\mathrm{DC}}[n]-\hat{a}[n]}"
+            r"{a_{\mathrm{DC}}[n]}"
+        )
+
+        st.caption(
+            "Relative errors use the secondary axis on the right. "
+            "Values are dimensionless, without percentage conversion."
+        )
+
+        st.warning(
+            "Relative errors can become very large near reference zero "
+            "crossings. Exactly zero reference values produce NaN. "
+            "No threshold, clipping or RMS normalization is applied."
+        )
+
+        zero_count = int(np.count_nonzero(acc_dc.data == 0.0))
+
+        st.caption(
+            f"Points with reference exactly equal to zero: {zero_count}"
+        )
+
+    fig = error_figure(
+        points=points,
+        unit=unit,
+        error_type=error_type,
     )
 
     st.plotly_chart(
         fig,
         use_container_width=True,
         config=PLOT_CONFIG,
-        key="spectrum",
-    )
-
-st.caption(
-    "Both plots use acceleration after DC removal and before HPF. "
-    "The red line indicates the selected cutoff. "
-    "The displayed FFT is not high-pass filtered and uses no window."
-)
-
-# =============================================================================
-# VELOCIDADE: WAVEFORM E FFT
-# =============================================================================
-
-st.subheader("Estimated velocity")
-
-left, right = st.columns(2)
-
-with left:
-    fig = line_figure(
-        x=velocity.time,
-        y=velocity.data,
-        title="Velocity estimated by FFT integration",
-        x_label="Time [s]",
-        y_label=f"Velocity [{velocity.unity}]",
-        color="seagreen",
-    )
-
-    st.plotly_chart(
-        fig,
-        use_container_width=True,
-        config=PLOT_CONFIG,
-        key="velocity_waveform",
-    )
-
-with right:
-    frequency_vel, amplitude_vel = amplitude_spectrum(velocity)
-
-    fig = line_figure(
-        x=frequency_vel,
-        y=amplitude_vel,
-        title="Velocity — single-sided amplitude spectrum",
-        x_label="Frequency [Hz]",
-        y_label=f"Amplitude [{velocity.unity}]",
-        color="seagreen",
-    )
-
-    fig.add_vline(
-        x=cutoff,
-        line_color="crimson",
-        line_dash="dash",
-        annotation_text=f"Cutoff: {cutoff:g} Hz",
-        annotation_position="top right",
-    )
-
-    st.plotly_chart(
-        fig,
-        use_container_width=True,
-        config=PLOT_CONFIG,
-        key="velocity_spectrum",
-    )
-
-st.caption(
-    "The velocity spectrum is calculated from the estimated velocity, "
-    "after acceleration high-pass filtering and FFT integration. "
-    "No additional filter or window is applied to display this spectrum."
-)
-
-# =============================================================================
-# COMPARAÇÃO DAS WAVEFORMS DE ACELERAÇÃO
-# =============================================================================
-
-st.subheader("Reference and reconstructed acceleration")
-
-fig = reconstruction_figure(
-    points=points,
-    unit=unit,
-)
-
-st.plotly_chart(
-    fig,
-    use_container_width=True,
-    config=PLOT_CONFIG,
-    key="acceleration_reconstruction_comparison",
-)
-
-st.caption(
-    "The reference is acceleration after DC removal, before HPF. "
-    "The reconstructed signals are obtained by differentiating "
-    "the estimated velocity using FFT and finite differences."
-)
-
-st.caption(
-    "Click a legend item to hide or show a curve. "
-    "Double-click a legend item to isolate it. "
-    "All three curves share the same acceleration axis."
-)
-
-# =============================================================================
-# ACELERAÇÃO E ERROS DE RECONSTRUÇÃO
-# =============================================================================
-
-st.subheader("Acceleration and reconstruction errors")
-
-error_options = {
-    "Signed error — same acceleration axis": "signed",
-    "Absolute error — same acceleration axis": "absolute",
-    "Relative error — secondary axis": "relative",
-}
-
-selected_error = st.selectbox(
-    "Error measure shown in the chart",
-    options=list(error_options),
-    index=0,
-    key="error_measure_selection_v2",
-)
-
-error_type = error_options[selected_error]
-
-if error_type == "absolute":
-    st.latex(
-        r"e_{\mathrm{abs}}[n] = "
-        r"\left|a_{\mathrm{DC}}[n]-\hat{a}[n]\right|"
+        key="combined_reconstruction_errors",
     )
 
     st.caption(
-        "Absolute errors are nonnegative and share the acceleration "
-        "axis and physical unit."
-    )
-
-elif error_type == "signed":
-    st.latex(
-        r"e[n] = a_{\mathrm{DC}}[n]-\hat{a}[n]"
+        "Click a legend item to hide or show a curve. "
+        "Double-click a legend item to isolate it."
     )
 
     st.caption(
-        "Signed errors share the acceleration axis and physical unit. "
-        "The sign follows reference minus estimate."
+        "Changing the error measure affects only this chart. "
+        "Metrics and exported pointwise results remain unchanged. "
+        "The reference is acceleration after DC removal, before HPF."
     )
 
-else:
-    st.latex(
-        r"e_{\mathrm{rel}}[n] = "
-        r"\frac{a_{\mathrm{DC}}[n]-\hat{a}[n]}"
-        r"{a_{\mathrm{DC}}[n]}"
-    )
+    # =============================================================================
+    # MÉTRICAS
+    # =============================================================================
+
+    st.subheader("Metric comparison")
+
+    st.write(f"Acceleration metrics — unit: {unit}")
+    st.dataframe(result["acceleration_metrics"])
+
+    st.write(f"Velocity metrics — unit: {velocity.unity}")
+    st.dataframe(result["velocity_metrics"])
+
+    st.write("Reconstruction errors relative to acceleration after DC removal")
+    st.dataframe(result["reconstruction_metrics"])
 
     st.caption(
-        "Relative errors use the secondary axis on the right. "
-        "Values are dimensionless, without percentage conversion."
+        "NRMSE is a global metric normalized by reference RMS. "
+        "It is not the pointwise relative error denominator."
     )
 
-    st.warning(
-        "Relative errors can become very large near reference zero "
-        "crossings. Exactly zero reference values produce NaN. "
-        "No threshold, clipping or RMS normalization is applied."
-    )
 
-    zero_count = int(np.count_nonzero(acc_dc.data == 0.0))
-
+with features_tab:
+    st.subheader("Feature extraction")
     st.caption(
-        f"Points with reference exactly equal to zero: {zero_count}"
+        "Select the features, then click Extract features. "
+        "All samples are used, without trimming."
     )
 
-fig = error_figure(
-    points=points,
-    unit=unit,
-    error_type=error_type,
-)
+    fingerprint = hashlib.sha256()
+    fingerprint.update(np.ascontiguousarray(
+        points[["acc_original", "acc_dc", "acc_fft", "acc_time", "velocity"]]
+        .to_numpy(dtype=np.float64)
+    ).tobytes())
+    fingerprint.update(json.dumps({
+        "source": source, "signal": name, "fs": float(fs),
+        "cutoff": float(cutoff), "order": int(order), "unit": unit,
+    }, sort_keys=True).encode("utf-8"))
+    feature_context = fingerprint.hexdigest()
 
-st.plotly_chart(
-    fig,
-    use_container_width=True,
-    config=PLOT_CONFIG,
-    key="combined_reconstruction_errors",
-)
+    with st.form("feature_extraction_form"):
+        selected_features = st.multiselect(
+            "Features to extract",
+            options=FEATURE_NAMES,
+            default=["RMS", "Peak", "Peak-to-Peak", "Kurtosis", "Crest Factor"],
+        )
+        submitted_features = st.form_submit_button("Extract features")
 
-st.caption(
-    "Click a legend item to hide or show a curve. "
-    "Double-click a legend item to isolate it."
-)
+    if submitted_features:
+        if not selected_features:
+            st.warning("Select at least one feature.")
+        else:
+            with st.spinner("Extracting features..."):
+                extracted_table = build_feature_table_from_result(
+                    result=result,
+                    selected=selected_features,
+                )
+            st.session_state["feature_results"] = {
+                "context": feature_context,
+                "table": extracted_table,
+                "selected": list(selected_features),
+            }
 
-st.caption(
-    "Changing the error measure affects only this chart. "
-    "Metrics and exported pointwise results remain unchanged. "
-    "The reference is acceleration after DC removal, before HPF."
-)
+    saved_features = st.session_state.get("feature_results")
+    current_features = (
+        saved_features is not None
+        and saved_features["context"] == feature_context
+    )
 
-# =============================================================================
-# MÉTRICAS
-# =============================================================================
+    if current_features:
+        feature_table = saved_features["table"]
+        feature_difference_table = reconstruction_feature_difference(feature_table)
+        st.markdown("### Extracted values")
+        st.dataframe(feature_table, use_container_width=True)
+        st.caption(
+            "Acceleration and velocity have different units. "
+            "Dimensional feature values are not directly comparable across them. "
+            "This table shows the last submitted extraction."
+        )
+        st.markdown("### Reconstruction feature differences [%]")
+        st.dataframe(feature_difference_table, use_container_width=True)
+        st.caption(
+            "100 × (reference feature − estimated feature) / |reference feature|. "
+            "Reference: acceleration after DC removal. Zero denominators produce NaN; "
+            "near-zero denominators may produce very large values."
+        )
+        feature_to_plot = st.selectbox(
+            "Feature to visualize",
+            options=feature_table.index.tolist(),
+            key="selected_feature_chart",
+        )
+        acceleration_columns = [
+            "Original acceleration", "Acceleration after DC",
+            "Reconstructed — FFT", "Reconstructed — finite differences",
+        ]
+        chart_values = feature_table.loc[feature_to_plot, acceleration_columns]
+        feature_fig = go.Figure(go.Bar(
+            x=chart_values.index.tolist(),
+            y=chart_values.to_numpy(dtype=float),
+            marker_color=["gray", "black", "royalblue", "darkorange"],
+        ))
+        feature_fig.update_layout(
+            title=f"{feature_to_plot} — acceleration signals",
+            xaxis_title="Signal", yaxis_title="Feature value", height=420,
+        )
+        st.plotly_chart(
+            feature_fig, use_container_width=True,
+            config=PLOT_CONFIG, key="feature_comparison_chart",
+        )
+        st.write("Estimated velocity — selected feature:", float(
+            feature_table.loc[feature_to_plot, "Estimated velocity"]
+        ))
+        st.download_button(
+            "Download extracted features",
+            data=feature_table.to_csv().encode("utf-8"),
+            file_name="extracted_features.csv", mime="text/csv",
+            key="download_extracted_features",
+        )
+        st.download_button(
+            "Download feature differences",
+            data=feature_difference_table.to_csv().encode("utf-8"),
+            file_name="feature_differences.csv", mime="text/csv",
+            key="download_feature_differences",
+        )
+    elif saved_features is not None:
+        st.info("Signal or settings changed. Click Extract features to update the results.")
+    else:
+        st.info("Select features and click Extract features.")
 
-st.subheader("Metric comparison")
-
-st.write(f"Acceleration metrics — unit: {unit}")
-st.dataframe(result["acceleration_metrics"])
-
-st.write(f"Velocity metrics — unit: {velocity.unity}")
-st.dataframe(result["velocity_metrics"])
-
-st.write("Reconstruction errors relative to acceleration after DC removal")
-st.dataframe(result["reconstruction_metrics"])
-
-st.caption(
-    "NRMSE is a global metric normalized by reference RMS. "
-    "It is not the pointwise relative error denominator."
-)
+    with st.expander("Feature definitions and conventions"):
+        st.markdown(
+            "- Peak: maximum absolute amplitude.\n"
+            "- STD: ddof=0.\n"
+            "- Temporal skewness and kurtosis: bias=True; Pearson kurtosis.\n"
+            "- Energy: sum of squared samples, without dt scaling.\n"
+            "- Zero Crossing Rate: signbit changes divided by N−1; zero is nonnegative.\n"
+            "- Spectral features: frequency moments weighted by one-sided power; "
+            "DC excluded, no window, no extra filtering.\n"
+            "- Spectral Kurtosis is not a segment-based kurtogram estimator.\n"
+            "- Undefined values are represented by NaN."
+        )
 
 # =============================================================================
 # EXPORTAÇÃO
@@ -581,6 +707,16 @@ if not demo:
         "matrix_orientation": "samples_by_sensors",
     })
 
+settings["feature_conventions"] = {
+    "std_ddof": 0, "temporal_moment_bias": True,
+    "kurtosis": "Pearson", "energy": "sum(x**2)",
+    "zcr": "signbit changes / (N-1)",
+    "spectral_weighting": "one-sided power", "spectral_dc_excluded": True,
+    "spectral_window": "none",
+}
+if current_features:
+    settings["extracted_features"] = saved_features["selected"]
+
 settings["displayed_error_measure"] = error_type
 settings["displayed_error_axis"] = (
     "secondary"
@@ -610,6 +746,10 @@ with zipfile.ZipFile(
             filename,
             result[key].to_csv(),
         )
+
+    if current_features:
+        archive.writestr("extracted_features.csv", feature_table.to_csv())
+        archive.writestr("feature_differences.csv", feature_difference_table.to_csv())
 
     archive.writestr(
         "config.json",
