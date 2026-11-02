@@ -18,6 +18,7 @@ from aux_functions import (
     extract_mat_sensor_names,
     line_figure,
     error_figure,
+    reconstruction_figure,
 )
 
 st.set_page_config(
@@ -44,6 +45,7 @@ st.sidebar.header("Input")
 demo = st.sidebar.checkbox(
     "Use synthetic signal -- demonstration only",
     value=True,
+    disabled=True,
 )
 
 if demo:
@@ -72,7 +74,7 @@ else:
 
     if uploaded is None:
         st.info(
-            "Load a .mat file or activate the demonstration signal."
+            "Upload a MATLAB (.mat) file using the sidebar to begin."
         )
         st.stop()
 
@@ -400,14 +402,44 @@ st.caption(
 )
 
 # =============================================================================
+# COMPARAÇÃO DAS WAVEFORMS DE ACELERAÇÃO
+# =============================================================================
+
+st.subheader("Reference and reconstructed acceleration")
+
+fig = reconstruction_figure(
+    points=points,
+    unit=unit,
+)
+
+st.plotly_chart(
+    fig,
+    use_container_width=True,
+    config=PLOT_CONFIG,
+    key="acceleration_reconstruction_comparison",
+)
+
+st.caption(
+    "The reference is acceleration after DC removal, before HPF. "
+    "The reconstructed signals are obtained by differentiating "
+    "the estimated velocity using FFT and finite differences."
+)
+
+st.caption(
+    "Click a legend item to hide or show a curve. "
+    "Double-click a legend item to isolate it. "
+    "All three curves share the same acceleration axis."
+)
+
+# =============================================================================
 # ACELERAÇÃO E ERROS DE RECONSTRUÇÃO
 # =============================================================================
 
 st.subheader("Acceleration and reconstruction errors")
 
 error_options = {
-    "Absolute error — same acceleration axis": "absolute",
     "Signed error — same acceleration axis": "signed",
+    "Absolute error — same acceleration axis": "absolute",
     "Relative error — secondary axis": "relative",
 }
 
@@ -415,7 +447,7 @@ selected_error = st.selectbox(
     "Error measure shown in the chart",
     options=list(error_options),
     index=0,
-    key="error_measure_selection",
+    key="error_measure_selection_v2",
 )
 
 error_type = error_options[selected_error]

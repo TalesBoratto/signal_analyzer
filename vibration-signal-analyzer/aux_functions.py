@@ -233,3 +233,74 @@ def error_figure(
 
     return fig
 
+def reconstruction_figure(points, unit: str):
+    """
+    Compara a aceleração de referência e as duas reconstruções.
+
+    Referência:
+        Aceleração após remoção de DC, antes do HPF.
+    """
+    curves = {
+        "acc_dc": {
+            "label": "Reference — acceleration after DC removal",
+            "color": "black",
+            "width": 1.4,
+        },
+        "acc_fft": {
+            "label": "Reconstructed — FFT differentiation",
+            "color": "royalblue",
+            "width": 1.0,
+        },
+        "acc_time": {
+            "label": "Reconstructed — finite differences",
+            "color": "darkorange",
+            "width": 1.0,
+        },
+    }
+
+    fig = go.Figure()
+
+    for column, settings in curves.items():
+        fig.add_trace(
+            go.Scattergl(
+                x=points["time_s"],
+                y=points[column],
+                name=settings["label"],
+                mode="lines",
+                line={
+                    "color": settings["color"],
+                    "width": settings["width"],
+                },
+                hovertemplate=(
+                    "Time: %{x:.4f} s"
+                    "<br>Acceleration: %{y:.6g}"
+                    "<extra>%{fullData.name}</extra>"
+                ),
+            )
+        )
+
+    fig.update_layout(
+        title="Reference and reconstructed acceleration waveforms",
+        xaxis_title="Time [s]",
+        yaxis_title=f"Acceleration [{unit}]",
+        height=500,
+        dragmode="zoom",
+        hovermode="x unified",
+        legend={
+            "orientation": "h",
+            "yanchor": "bottom",
+            "y": 1.02,
+            "xanchor": "left",
+            "x": 0,
+            "itemclick": "toggle",
+            "itemdoubleclick": "toggleothers",
+        },
+        margin={
+            "l": 30,
+            "r": 30,
+            "t": 110,
+            "b": 40,
+        },
+    )
+
+    return fig
