@@ -304,3 +304,77 @@ def reconstruction_figure(points, unit: str):
     )
 
     return fig
+
+ 
+def envelope_overlay_figure(
+    time,
+    signal,
+    envelope,
+    unit: str,
+    signal_label: str = "Acceleration",
+    mirror: bool = False,
+):
+    """Waveform de aceleração com o envelope sobreposto."""
+    fig = go.Figure()
+ 
+    fig.add_trace(
+        go.Scattergl(
+            x=time,
+            y=signal,
+            name=signal_label,
+            mode="lines",
+            line={"color": "darkorange", "width": 1},
+            hovertemplate=(
+                "Time: %{x:.4f} s"
+                "<br>Acceleration: %{y:.6g}"
+                "<extra>%{fullData.name}</extra>"
+            ),
+        )
+    )
+ 
+    fig.add_trace(
+        go.Scattergl(
+            x=time,
+            y=envelope,
+            name="Amplitude envelope",
+            mode="lines",
+            line={"color": "royalblue", "width": 2},
+            hovertemplate=(
+                "Time: %{x:.4f} s"
+                "<br>Envelope: %{y:.6g}"
+                "<extra>%{fullData.name}</extra>"
+            ),
+        )
+    )
+ 
+    if mirror:
+        fig.add_trace(
+            go.Scattergl(
+                x=time,
+                y=-np.asarray(envelope),
+                name="Amplitude envelope (mirrored)",
+                mode="lines",
+                line={"color": "royalblue", "width": 2},
+                showlegend=False,
+                hoverinfo="skip",
+            )
+        )
+ 
+    fig.update_layout(
+        title="Acceleration signal vs. amplitude envelope",
+        xaxis_title="Time [s]",
+        yaxis_title=f"Acceleration [{unit}]",
+        height=450,
+        dragmode="zoom",
+        hovermode="x unified",
+        legend={
+            "orientation": "h",
+            "yanchor": "bottom",
+            "y": 1.02,
+            "xanchor": "left",
+            "x": 0,
+        },
+        margin={"l": 30, "r": 30, "t": 90, "b": 40},
+    )
+ 
+    return fig

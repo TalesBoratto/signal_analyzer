@@ -26,6 +26,12 @@ from aux_functions import (
     line_figure,
     error_figure,
     reconstruction_figure,
+    envelope_overlay_figure,
+)
+from envelope_analysis import (
+    FILTER_TYPES,
+    compute_envelope,
+    validate_filter,
 )
 
 st.set_page_config(
@@ -292,7 +298,9 @@ c3.metric("Sampling rate", f"{fs:g} Hz")
 c4.metric("Nominal duration", f"{original.size / fs:.3f} s")
 
 
-analysis_tab, features_tab = st.tabs(["Signal analysis", "Feature extraction"])
+analysis_tab, features_tab, envelope_tab = st.tabs(
+    ["Signal analysis", "Feature extraction", "Envelope analysis"]
+)
 
 with analysis_tab:
     # =============================================================================
@@ -672,6 +680,182 @@ with features_tab:
             "- Undefined values are represented by NaN."
         )
 
+with envelope_tab:
+    st.subheader("Envelope analysis")
+    st.caption(
+        "Pipeline: acceleration after DC removal → optional filter → "
+        "Hilbert transform → |analytic signal| = envelope → "
+        "(optional smoothing) → FFT of the envelope without its mean."
+    )
+ 
+    f1, f2, f3, f4 = st.columns(4)
+ 
+    filter_type = f1.selectbox(
+        "Filter before envelope",
+        options=FILTER_TYPES,
+        index=0,
+        key="env_filter_type",
+    )
+ 
+    env_low = env_high = None
+ 
+    if filter_type in ("High-pass", "Band-pass"):
+        env_low = f2.number_input(
+            "Low cutoff [Hz]" if filter_type == "Band-pass" else "Cutoff [Hz]",
+            min_value=0.000001,
+            value=1.0,
+            step=0.5,
+            format="%.6f",
+            key="env_low_cutoff",
+        )
+ 
+    if filter_type in ("Low-pass", "Band-pass"):
+        env_high = f3.number_input(
+            "High cutoff [Hz]" if filter_type == "Band-pass" else "Cutoff [Hz]",
+            min_value=0.000001,
+            value=float(min(fs / 4, 100.0)),
+            step=1.0,
+            format="%.6f",
+            key="env_high_cutoff",
+        )
+ 
+    env_order = f4.number_input(
+        "Butterworth order",
+        min_value=1,
+        max_value=10,
+        value=4,
+        step=1,
+        key="env_filter_order",
+        disabled=filter_type == "None",
+    )
+ 
+    o1, o2, o3 = st.columns(3)
+ 
+    smooth_enabled = o1.checkbox(
+        "Smooth envelope (low-pass)", value=False, key="env_smooth_on"
+    )
+    smooth_hz = None
+    if smooth_enabled:
+        smooth_hz = o2.number_input(
+            "Smoothing cutoff [Hz]",
+            min_value=0.000001,
+            value=float(min(fs / 10, 10.0)),
+            step=0.5,
+            format="%.6f",
+            key="env_smooth_cutoff",
+        )
+ 
+    show_filtered = o3.radio(
+        "Waveform shown",
+        options=["Filtered signal", "Input (after DC removal)"],
+        horizontal=True,
+        key="env_waveform_choice",
+        disabled=filter_type == "None",
+    )
+    mirror_envelope = st.checkbox(
+        "Show mirrored envelope (−envelope)", value=False, key="env_mirror"
+    )
+ 
+    filter_error = validate_filter(filter_type, env_low, env_high, fs)
+ 
+    if filter_error:
+        st.error(filter_error)
+    else:
+        try:
+            with st.spinner("Computing envelope..."):
+                env_result = compute_envelope(
+                    acc_dc,
+                    filter_type=filter_type,
+                    low_hz=env_low,
+                    high_hz=env_high,
+                    order=int(env_order),
+                    smooth_hz=smooth_hz,
+                )
+        except (ValueError, TypeError) as exc:
+            st.error(f"Envelope error: {exc}")
+        else:
+            env_filtered = env_result["filtered"]
+            env_signal = env_result["envelope"]
+ 
+            use_filtered = (
+                filter_type != "None" and show_filtered == "Filtered signal"
+            )
+            shown = env_filtered if use_filtered else acc_dc
+ 
+            fig = envelope_overlay_figure(
+                time=shown.time,
+                signal=shown.data,
+                envelope=env_signal.data,
+                unit=unit,
+                signal_label=(
+                    "Filtered acceleration"
+                    if use_filtered
+                    else "Acceleration (after DC removal)"
+                ),
+                mirror=mirror_envelope,
+            )
+            st.plotly_chart(
+                fig, use_container_width=True, config=PLOT_CONFIG,
+                key="envelope_overlay",
+            )
+            st.caption(
+                "The envelope is always computed from the filtered signal "
+                "(or from the DC-free signal when no filter is selected)."
+            )
+ 
+            left, right = st.columns(2)
+ 
+            with left:
+                fig = line_figure(
+                    x=env_signal.time,
+                    y=env_signal.data,
+                    title="Envelope waveform",
+                    x_label="Time [s]",
+                    y_label=f"Envelope amplitude [{unit}]",
+                    color="royalblue",
+                )
+                st.plotly_chart(
+                    fig, use_container_width=True, config=PLOT_CONFIG,
+                    key="envelope_waveform",
+                )
+ 
+            with right:
+                env_freq, env_amp = amplitude_spectrum(
+                    env_result["envelope_spectrum"]
+                )
+                fig = line_figure(
+                    x=env_freq,
+                    y=env_amp,
+                    title="Envelope — single-sided amplitude spectrum",
+                    x_label="Frequency [Hz]",
+                    y_label=f"Amplitude [{unit}]",
+                    color="royalblue",
+                )
+                st.plotly_chart(
+                    fig, use_container_width=True, config=PLOT_CONFIG,
+                    key="envelope_spectrum",
+                )
+ 
+            st.caption(
+                "Envelope spectrum: mean of the envelope removed, no window. "
+                "Peaks indicate modulation frequencies "
+                "(e.g. fault frequencies and their harmonics)."
+            )
+ 
+            envelope_csv = pd.DataFrame({
+                "time_s": env_signal.time,
+                "filtered_signal": env_filtered.data,
+                "envelope": env_signal.data,
+            }).to_csv(index=False).encode("utf-8")
+ 
+            st.download_button(
+                "Download envelope (CSV)",
+                data=envelope_csv,
+                file_name="envelope.csv",
+                mime="text/csv",
+                key="download_envelope",
+            )
+ 
 # =============================================================================
 # EXPORTAÇÃO
 # =============================================================================
